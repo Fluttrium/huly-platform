@@ -1,0 +1,117 @@
+name: Build and Push Docker Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag for images (e.g. v0.7.440-gantt)'
+        required: true
+        default: 'v0.7.440-gantt'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/fluttrium
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: tree:0
+          submodules: recursive
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: node common/scripts/install-run-rush.js install
+
+      - name: Build
+        run: node common/scripts/install-run-rush.js build
+
+      - name: Set model version
+        run: node common/scripts/install-run-rush.js model-version
+
+      - name: Docker build all
+        run: node common/scripts/install-run-rush.js docker:build -v
+        env:
+          DOCKER_EXTRA: --platform=linux/amd64 --load
+          DOCKER_BUILDKIT: 1
+          DOCKER_BUILD_CLEANUP: true
+
+      - name: Build external services
+        run: |
+          cd pods/external
+          node ../../common/scripts/bash.js bin/build.sh
+
+      - name: Retag and push images
+        run: |
+          VERSION="${{ github.event.inputs.version_tag }}"
+
+          IMAGES=(
+            "hardcoreeng/front"
+            "hardcoreeng/transactor"
+            "hardcoreeng/collaborator"
+            "hardcoreeng/account"
+            "hardcoreeng/workspace"
+            "hardcoreeng/fulltext"
+            "hardcoreeng/stats"
+            "hardcoreeng/rekoni-service"
+            "hardcoreeng/love"
+            "hardcoreeng/notification"
+            "hardcoreeng/telegram-bot"
+            "hardcoreeng/process"
+            "hardcoreeng/hulykvs"
+          )
+
+          for img in "${IMAGES[@]}"; do
+            short_name="${img#hardcoreeng/}"
+            target="${IMAGE_PREFIX}/${short_name}:${VERSION}"
+
+            source_id=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${img}:" | head -1)
+
+            if [ -n "$source_id" ]; then
+              echo "Retagging: ${source_id} -> ${target}"
+              docker tag "$source_id" "$target"
+              docker push "$target"
+              echo "Pushed ${target}"
+            else
+              echo "WARNING: Image ${img} not found, skipping"
+            fi
+          done
+
+          echo "=== All available hardcoreeng images ==="
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep hardcoreeng | sort
