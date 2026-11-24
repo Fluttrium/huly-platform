@@ -95,20 +95,24 @@ jobs:
             "hardcoreeng/love"
             "hardcoreeng/notification"
             "hardcoreeng/telegram-bot"
-            "hardcoreeng/process"
-            "hardcoreeng/hulykvs"
           )
+
+          # Special mappings: source -> target name (for reserved names in GHCR)
+          declare -A RENAME_MAP
+          RENAME_MAP["hardcoreeng/process"]="huly-process"
 
           for img in "${IMAGES[@]}"; do
             short_name="${img#hardcoreeng/}"
-            target="${IMAGE_PREFIX}/${short_name}:${VERSION}"
+            # Use renamed target if exists
+            target_name="${RENAME_MAP[$img]:-$short_name}"
+            target="${IMAGE_PREFIX}/${target_name}:${VERSION}"
 
             source_id=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${img}:" | head -1)
 
             if [ -n "$source_id" ]; then
               echo "Retagging: ${source_id} -> ${target}"
               docker tag "$source_id" "$target"
-              docker push "$target"
+              docker push "$target" || echo "WARN: Failed to push ${target}, continuing..."
               echo "Pushed ${target}"
             else
               echo "WARNING: Image ${img} not found, skipping"
